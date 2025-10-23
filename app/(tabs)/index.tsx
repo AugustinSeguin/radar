@@ -1,7 +1,7 @@
 import MapComponent from "@/components/MapComponent";
 import * as Location from "expo-location";
 import { useEffect, useRef, useState } from "react";
-import { Alert, Linking } from "react-native";
+import { Alert, Linking, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 type UserLocation = { latitude: number; longitude: number } | null;
@@ -9,6 +9,8 @@ type UserLocation = { latitude: number; longitude: number } | null;
 export default function HomeScreen() {
   const [userLocation, setUserLocation] = useState<UserLocation>(null);
   const mounted = useRef(true);
+  const [typeFilter, setTypeFilter] = useState<string>("");
+  const [maxDistanceKm, setMaxDistanceKm] = useState<number | null>(null);
 
   const openSettings = () => {
     Linking.openSettings().catch(() => {
@@ -73,7 +75,47 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1 }}>
-      <MapComponent userLocation={userLocation} />
+      <View style={{ padding: 8, backgroundColor: "white", zIndex: 20 }}>
+        <Text style={{ fontWeight: "600" }}>Filtrer les radars</Text>
+        <TextInput
+          placeholder="Type (ex: radar fixe)"
+          value={typeFilter}
+          onChangeText={setTypeFilter}
+          style={{
+            borderWidth: 1,
+            borderColor: "#ddd",
+            padding: 8,
+            marginTop: 8,
+            borderRadius: 6,
+          }}
+        />
+        <TextInput
+          placeholder="Distance max (km) — vide = infini"
+          value={
+            maxDistanceKm !== null && maxDistanceKm !== undefined
+              ? String(maxDistanceKm)
+              : ""
+          }
+          onChangeText={(t) => {
+            const n = Number.parseFloat(t);
+            setMaxDistanceKm(Number.isFinite(n) ? n : null);
+          }}
+          keyboardType="numeric"
+          style={{
+            borderWidth: 1,
+            borderColor: "#ddd",
+            padding: 8,
+            marginTop: 8,
+            borderRadius: 6,
+          }}
+        />
+      </View>
+
+      <MapComponent
+        userLocation={userLocation}
+        typeFilter={typeFilter}
+        maxDistanceKm={maxDistanceKm}
+      />
     </SafeAreaView>
   );
 }
