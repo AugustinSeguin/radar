@@ -1,0 +1,18 @@
+{
+    "radar-1": {
+        "userRank": 12,
+        "passages": 342
+    },
+    "radar-2": {
+        "userRank": 87,
+        "passages": 45
+    },
+    "radar-3": {
+        "userRank": 3,
+        "passages": 1290
+    },
+    "radar-42": {
+        "userRank": 256,
+        "passages": 12
+    }
+}

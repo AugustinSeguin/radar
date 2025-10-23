@@ -1,9 +1,23 @@
-import React, { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, StyleSheet, View } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import MapView, { Circle, MapViewProps, Marker } from "react-native-maps";
 
 const RADARS_URL =
   "https://www.data.gouv.fr/fr/datasets/r/402aa4fe-86a9-4dcd-af88-23753e290a58";
+
+const RADAR_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let _radarCache: { ts: number; data: RadarData[] } | null = null;
+
+const CLUSTER_CACHE_TTL_MS = 60 * 1000;
+const _clusterCache = new Map<string, { ts: number; clusters: any[] }>();
 
 type RadarData = {
   id: string;
@@ -29,6 +43,11 @@ type ExtendedProps = Props & {
 
 async function fetchAndParseRadars(): Promise<RadarData[]> {
   try {
+    const now = Date.now();
+    if (_radarCache && now - _radarCache.ts < RADAR_CACHE_TTL_MS) {
+      return _radarCache.data;
+    }
+
     const response = await fetch(RADARS_URL);
     const csvText = await response.text();
 
@@ -66,6 +85,7 @@ async function fetchAndParseRadars(): Promise<RadarData[]> {
       });
     }
 
+    _radarCache = { ts: now, data: radars };
     return radars;
   } catch (error) {
     console.error("Erreur de chargement des radars :", error);
@@ -79,7 +99,7 @@ async function fetchAndParseRadars(): Promise<RadarData[]> {
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
   const toRad = (v: number) => (v * Math.PI) / 180;
-  const R = 6371; // km
+  const R = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
   const a =
@@ -108,12 +128,29 @@ export default function MapComponent({
     longitudeDelta: number;
   } | null>(null);
   const mapRef = useRef<any>(null);
+  const [rankings, setRankings] = useState<Record<
+    string,
+    { userRank: number; passages: number }
+  > | null>(null);
+  const [selectedRadar, setSelectedRadar] = useState<RadarData | null>(null);
+  const [modalVisible, setModalVisible] = useState(false);
 
   useEffect(() => {
     fetchAndParseRadars().then((data) => {
       setRadarMarkers(data);
       setIsLoading(false);
     });
+
+    try {
+      const ranks = require("@/assets/images/data_rankings.json");
+      setRankings(ranks);
+    } catch (e) {
+      console.warn(
+        "Impossible de charger data_rankings.json, génération aléatoire active.",
+        e
+      );
+      setRankings(null);
+    }
   }, []);
 
   const zoomedRegion = userLocation
@@ -131,27 +168,29 @@ export default function MapComponent({
     }
   }, [userLocation]);
 
-  const filteredRadars = radarMarkers.filter((r) => {
-    if (typeFilter && typeFilter.trim().length > 0) {
-      const needle = typeFilter.trim().toLowerCase();
-      if (!String(r.type).toLowerCase().includes(needle)) return false;
-    }
+  const filteredRadars = useMemo(() => {
+    return radarMarkers.filter((r) => {
+      if (typeFilter && typeFilter.trim().length > 0) {
+        const needle = typeFilter.trim().toLowerCase();
+        if (!String(r.type).toLowerCase().includes(needle)) return false;
+      }
 
-    if (maxDistanceKm != null && userLocation) {
-      const d = haversineKm(
-        userLocation.latitude,
-        userLocation.longitude,
-        r.latitude,
-        r.longitude
-      );
-      if (d > maxDistanceKm) return false;
-    }
+      if (maxDistanceKm != null && userLocation) {
+        const d = haversineKm(
+          userLocation.latitude,
+          userLocation.longitude,
+          r.latitude,
+          r.longitude
+        );
+        if (d > maxDistanceKm) return false;
+      }
 
-    return true;
-  });
+      return true;
+    });
+  }, [radarMarkers, typeFilter, maxDistanceKm, userLocation]);
 
   const CLUSTER_RADIUS_KM = 10;
-  const CLUSTER_MIN_COUNT = 6; 
+  const CLUSTER_MIN_COUNT = 6;
   const MAX_CLUSTERS = 3;
 
   type Cluster = { lat: number; lon: number; count: number; ids: string[] };
@@ -197,7 +236,28 @@ export default function MapComponent({
     );
   }
 
-  const clustersToShow = computeClusters(visibleRadars);
+  const clustersToShow = useMemo(() => {
+    // build a cache key
+    const key = JSON.stringify({
+      lat: mapRegion?.latitude ?? null,
+      lon: mapRegion?.longitude ?? null,
+      latD: mapRegion?.latitudeDelta ?? null,
+      lonD: mapRegion?.longitudeDelta ?? null,
+      typeFilter,
+      maxDistanceKm,
+      len: visibleRadars.length,
+    });
+
+    const now = Date.now();
+    const cached = _clusterCache.get(key);
+    if (cached && now - cached.ts < CLUSTER_CACHE_TTL_MS) {
+      return cached.clusters as Cluster[];
+    }
+
+    const clusters = computeClusters(visibleRadars);
+    _clusterCache.set(key, { ts: now, clusters });
+    return clusters;
+  }, [visibleRadars, mapRegion, typeFilter, maxDistanceKm]);
 
   const ZOOM_THRESHOLD = 1.8;
   const showRadars =
@@ -260,6 +320,10 @@ export default function MapComponent({
                 }}
                 title={`Radar ${radar.type}`}
                 description={`Vitesse max : ${radar.vma} km/h`}
+                onPress={() => {
+                  setSelectedRadar(radar);
+                  setModalVisible(true);
+                }}
                 pinColor="red"
               />
             ))
@@ -285,6 +349,60 @@ export default function MapComponent({
           />
         ))}
       </MapView>
+
+      {/* Modal détail radar */}
+      <Modal visible={modalVisible} animationType="slide" transparent>
+        <View
+          style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
+        >
+          <View
+            style={{
+              backgroundColor: "white",
+              padding: 20,
+              borderRadius: 8,
+              width: 320,
+            }}
+          >
+            <Text style={{ fontWeight: "700", fontSize: 16, marginBottom: 8 }}>
+              Détail radar
+            </Text>
+            {selectedRadar ? (
+              (() => {
+                const data = rankings?.[selectedRadar.id];
+                const userRank =
+                  data?.userRank ?? Math.floor(Math.random() * 500) + 1;
+                const passages =
+                  data?.passages ?? Math.floor(Math.random() * 2000);
+                return (
+                  <View>
+                    <Text>Identifiant: {selectedRadar.id}</Text>
+                    <Text>Type: {selectedRadar.type}</Text>
+                    <Text>VMA: {selectedRadar.vma} km/h</Text>
+                    <Text style={{ marginTop: 8 }}>
+                      Ton classement individuel: #{userRank}
+                    </Text>
+                    <Text>Nombre de passages: {passages}</Text>
+                  </View>
+                );
+              })()
+            ) : (
+              <Text>Aucun radar sélectionné</Text>
+            )}
+
+            <TouchableOpacity
+              onPress={() => setModalVisible(false)}
+              style={{
+                marginTop: 12,
+                padding: 10,
+                backgroundColor: "#eee",
+                borderRadius: 6,
+              }}
+            >
+              <Text style={{ textAlign: "center" }}>Fermer</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
